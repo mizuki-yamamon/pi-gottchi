@@ -1,0 +1,12 @@
+[Unit]
+Description=Moko boot splash (egg animation)
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/bin/python3 /home/mizukichi/whisplay-moko/splash.py
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

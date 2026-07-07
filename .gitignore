@@ -1,0 +1,13 @@
+# 秘密情報・実行時生成物（絶対にコミットしない）
+.env
+state.json
+voices/
+htsvoice/
+__pycache__/
+*.pyc
+# ベンダーコードの参照コピー（PiSugar公式リポジトリ由来）
+remote-ref/
+# 実行時生成物（続き）
+memory.json
+*.bak-*
+.DS_Store

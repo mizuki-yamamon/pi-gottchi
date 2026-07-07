@@ -1,0 +1,16 @@
+[Unit]
+Description=Moko tamagotchi character
+# 注意: whisplay-soundcard-warmup は After=multi-user.target を持つため
+# After に入れると順序循環になり moko の起動が systemd に削除される（実績あり）
+After=sound.target
+
+[Service]
+WorkingDirectory=/home/mizukichi/whisplay-moko
+ExecStart=/usr/bin/python3 -u /home/mizukichi/whisplay-moko/chara.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
