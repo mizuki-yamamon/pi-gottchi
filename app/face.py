@@ -5,9 +5,18 @@ render(expr, frame, extras) が PIL Image を返す。ハード依存なし。
 """
 import math
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 W, H = 240, 280
+
+_GAUGE_FONT = None      # ハート残量の%表示用（無くてもゲージは出る）
+for _p in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+           "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+    try:
+        _GAUGE_FONT = ImageFont.truetype(_p, 16)
+        break
+    except OSError:
+        continue
 
 # ---------- 色 ----------
 INK = (74, 56, 50)              # 目・輪郭の焦げ茶
@@ -112,16 +121,43 @@ def _ear_icon(draw, x, y, frame):
         draw.arc([x - r, y - r, x + r, y + r], -40, 40, fill=col, width=2)
 
 
-def _battery_icon(draw, x, y, pct, frame):
-    """低残量時に表示する電池アイコン（10%以下は点滅）。"""
-    w, h = 34, 16
-    draw.rounded_rectangle([x, y, x + w, y + h], radius=3, outline=INK, width=3)
-    draw.rectangle([x + w + 2, y + 5, x + w + 5, y + h - 5], fill=INK)
-    if pct > 10 or frame % 6 < 3:
-        fw = max(2, int((w - 8) * pct / 100))
-        col = ((120, 205, 130) if pct > 40 else
-               (255, 175, 70) if pct > 20 else (238, 92, 92))
-        draw.rectangle([x + 4, y + 4, x + 4 + fw, y + h - 4], fill=col)
+def _bolt(draw, x, y, s, fill):
+    """小さな稲妻（でんき=もこのごはん）。"""
+    draw.polygon([(x + 0.4 * s, y - s), (x - 0.5 * s, y + 0.15 * s),
+                  (x - 0.05 * s, y + 0.15 * s), (x - 0.4 * s, y + s),
+                  (x + 0.5 * s, y - 0.15 * s), (x + 0.05 * s, y - 0.15 * s)],
+                 fill=fill)
+
+
+def _heart_gauge(img, draw, pct, frame, charging):
+    """右上のハート残量ゲージ。下から満ちる+%表示。充電中は鼓動+稲妻。
+
+    10%以下（未充電）は点滅して知らせる。
+    """
+    if pct <= 10 and not charging and frame % 6 >= 3:
+        return
+    r = 14 + (1 if charging and frame % 4 < 2 else 0)   # 充電中はドクドク
+    size = 2 * r + 8
+    c = size // 2
+    heart = Image.new("L", (size, size), 0)
+    hd = ImageDraw.Draw(heart)
+    _heart(hd, c, c, r, 255)
+    filled = heart.copy()
+    fd = ImageDraw.Draw(filled)
+    cut = int((c + r) - 2 * r * max(0, min(100, pct)) / 100)
+    fd.rectangle([0, 0, size, cut], fill=0)             # 上を消す=下から満ちる
+    outline = Image.new("L", (size, size), 0)
+    od = ImageDraw.Draw(outline)
+    _heart(od, c, c, r + 2, 255)
+    px, py = W - size - 6, 6
+    img.paste((214, 150, 160), (px, py), outline)       # ふち
+    img.paste((255, 222, 230), (px, py), heart)         # 空きぶん: 薄ピンク
+    img.paste(HEART, (px, py), filled)                  # 残量ぶん: 濃ピンク
+    if charging:
+        _bolt(draw, px + c, py + c, 9, (255, 240, 150))
+    if _GAUGE_FONT is not None:
+        draw.text((px - 4, py + c), f"{pct}%", font=_GAUGE_FONT, anchor="rm",
+                  fill=INK, stroke_width=2, stroke_fill=(255, 255, 255))
 
 
 # ---------- 目 ----------
@@ -182,6 +218,7 @@ EYES = {
     "sleeping": lambda d, x, y, f, blink: _eye_closed(d, x, y),
     "sad": lambda d, x, y, f, blink: _eye_open(d, x, y, 0.9, look=(0, 0.8)),
     "hungry": lambda d, x, y, f, blink: _eye_droopy(d, x, y),
+    "eating": lambda d, x, y, f, blink: _eye_happy(d, x, y),
 }
 
 
@@ -234,6 +271,11 @@ def _draw_mouth(draw, expr, cx, my, frame, mouth_open):
     elif expr == "hungry":
         _mouth_wavy(draw, cx, my)
         draw.ellipse([cx + 15, my + 5, cx + 23, my + 15], fill=SWEAT)  # よだれ
+    elif expr == "eating":
+        if frame % 4 < 2:                       # もぐもぐ（開閉をくり返す）
+            _mouth_open(draw, cx, my, 10, 11)
+        else:
+            _mouth_omega(draw, cx, my)
     else:
         _mouth_omega(draw, cx, my)
 
@@ -294,6 +336,12 @@ def _draw_accessories(draw, expr, cx, cy, frame, extras):
             x = cx + sx * 86
             draw.line([x, cy - 96, x + sx * 12, cy - 110], fill=INK, width=4)
             draw.line([x + sx * 14, cy - 80, x + sx * 30, cy - 88], fill=INK, width=4)
+    elif expr == "eating":
+        t = (frame % 10) / 10                   # 稲妻ごはんが口へ落ちていく
+        by = cy - 76 + int(t * 96)
+        _bolt(draw, cx + 44, by, 8, (255, 214, 70))
+        if frame % 6 < 3:
+            _sparkle(draw, cx - 76, cy - 48, 7, (255, 224, 110))
     # ふわふわハート（なでた時など）
     t = extras.get("hearts_t")
     if t is not None and 0.0 <= t <= 1.0:
@@ -333,8 +381,9 @@ def render(expr, frame, extras=None):
 
     _draw_mouth(draw, expr, cx, cy + 34, frame, extras.get("mouth_open", False))
     _draw_accessories(draw, expr, cx, cy, frame, extras)
-    if extras.get("battery") is not None and expr != "sleeping":
-        _battery_icon(draw, W - 52, 10, extras["battery"], frame)
+    batt = extras.get("battery")
+    if batt is not None and (extras.get("charging") or expr != "sleeping"):
+        _heart_gauge(img, draw, batt, frame, extras.get("charging", False))
     if extras.get("mic_ready"):
         _ear_icon(draw, 24, 24, frame)
     return img

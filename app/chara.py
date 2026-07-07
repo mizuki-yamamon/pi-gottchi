@@ -63,7 +63,7 @@ LED = {
     "idle": (60, 24, 32), "happy": (255, 80, 120), "excited": (255, 200, 0),
     "surprised": (255, 200, 0), "dizzy": (255, 40, 40), "listening": (0, 60, 255),
     "thinking": (255, 140, 0), "talking": (0, 220, 120), "sleeping": (4, 4, 24),
-    "sad": (120, 40, 60), "hungry": (255, 70, 0),
+    "sad": (120, 40, 60), "hungry": (255, 70, 0), "eating": (255, 150, 40),
 }
 
 CHIMES = {
@@ -79,14 +79,14 @@ CHIMES = {
 FALLBACK_CHIME = {
     "petted": "happy", "greet": "happy", "shake_light": "wow", "wake": "hi",
     "hi": "hi", "shake_hard": "dizzy", "no_hear": "sad", "no_net": "sad",
-    "sleepy": "sad", "hungry": "sad", "batt_low": "sad",
+    "sleepy": "sad", "hungry": "sad", "batt_low": "sad", "eat": "happy",
 }
 
 CLICK_GAP = 0.4              # 連続クリックのまとめ判定時間
 SHUTDOWN_HOLD = 10.0         # この秒数の長押しで安全シャットダウン
 BATT_LOW = 20                # おなかすいた表示のしきい値[%]
 BATT_CRITICAL = 5            # 保護シャットダウンのしきい値[%]
-BATT_CHECK_SEC = 60          # 残量確認の間隔
+BATT_CHECK_SEC = 5           # 残量・充電器の確認間隔（挿したらすぐもぐもぐ）
 HUNGRY_NAG_SEC = 300         # 「おなかすいた」を言う間隔
 
 
@@ -149,16 +149,17 @@ except ImportError:
     SMBus = None
 
 
-def battery_percent():
-    """PiSugar 3 のバッテリー残量[%]（読めなければ None）。"""
+def battery_status():
+    """PiSugar 3 の (残量[%], 充電器接続) を返す（読めなければ (None, False)）。"""
     if SMBus is None:
-        return None
+        return None, False
     try:
         with SMBus(1) as bus:
-            v = bus.read_byte_data(0x57, 0x2A)
-        return v if 0 <= v <= 100 else None
+            pct = bus.read_byte_data(0x57, 0x2A)
+            ctr1 = bus.read_byte_data(0x57, 0x02)   # bit7 = 外部電源あり
+        return (pct if 0 <= pct <= 100 else None), bool(ctr1 & 0x80)
     except OSError:
-        return None
+        return None, False
 
 
 def mic_rms():
@@ -331,6 +332,7 @@ class Moko:
         self.blink_now = False
         self.frame = 0
         self.batt = None             # バッテリー残量[%]
+        self.plugged = False         # 充電器が挿さっているか
         self.last_batt_check = 0.0
         self.last_hungry = 0.0
         self._shutting = False
@@ -541,14 +543,22 @@ class Moko:
         if now - self.last_batt_check < BATT_CHECK_SEC:
             return
         self.last_batt_check = now
-        pct = battery_percent()
+        pct, plugged = battery_status()
+        if plugged and not self.plugged:         # 充電器が挿さった → ごはん!
+            print(f"[batt] 充電開始 もぐもぐ（残量{pct}%）")
+            self._react("eating", 3.5, "eat", mood=8, xp=1)
+        elif self.plugged and not plugged:
+            print(f"[batt] 充電おわり（残量{pct}%）")
+        self.plugged = plugged
         if pct is None:
             return
-        charging = self.batt is not None and pct > self.batt
         self.batt = pct
-        if pct <= BATT_CRITICAL and not charging:
+        if plugged:                              # ごはん中は機嫌が少しずつ回復
+            self.state["mood"] = min(100.0, self.state["mood"] + 0.4)
+            return                               # 空腹表示・保護シャットダウンなし
+        if pct <= BATT_CRITICAL:
             self._safe_shutdown("batt_low", f"電池残量{pct}%のため保護シャットダウン")
-        elif pct <= BATT_LOW and not charging and now - self.last_hungry > HUNGRY_NAG_SEC:
+        elif pct <= BATT_LOW and now - self.last_hungry > HUNGRY_NAG_SEC:
             self.last_hungry = now
             print(f"[batt] 残量{pct}% おなかすいたよ〜")
             self._react("hungry", 4.0, "hungry")
@@ -604,6 +614,8 @@ class Moko:
             return self.react_expr
         if self._is_sleeping():
             return "sleeping"
+        if self.plugged:
+            return "eating"          # 充電中はもぐもぐ（会話・睡眠が優先）
         if self.batt is not None and self.batt <= BATT_LOW:
             return "hungry"
         if self.state["mood"] < 25:
@@ -621,11 +633,14 @@ class Moko:
     # ---- 描画 ----
     def _draw(self, expr):
         extras = {"blink": self.blink_now}
-        if self.batt is not None and self.batt <= 25:
+        # ハート残量ゲージ: 充電中はずっと / 低残量の警告時
+        if self.batt is not None and (self.plugged or self.batt <= 25):
             extras["battery"] = self.batt
+            extras["charging"] = self.plugged
         # 会話待機中は耳マーク=「聞いてるよ」サイン
         if (self.chat is not None and self.chat.active()
-                and self.chat.phase == "idle" and expr in ("idle", "happy", "hungry")):
+                and self.chat.phase == "idle"
+                and expr in ("idle", "happy", "hungry", "eating")):
             extras["mic_ready"] = True
         if expr == "talking":
             live_play = self.chat is not None and self.chat.phase == "play"
